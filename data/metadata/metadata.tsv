@@ -1,0 +1,12 @@
+CommonName	ScientificName	Assembly	taxid	Notes
+Human	Homo sapiens	GRCh38.p14	9606	
+Mouse	Mus musculus	GRCm39	10090	
+Naked mole-rat female	Heterocephalus glaber	Naked_mole-rat_maternal	10181	
+Damaraland mole-rat	Fukomys damarensis	DMR_v1.0	885580	
+Guinea pig	Cavia porcellus	Cavpor3.0	10141	
+American beaver	Castor canadensis	C.can_genome_v1.0	51338	
+African elephant	Loxodonta africana	Loxafr3.0	9785	
+Little brown bat	Myotis lucifugus	Myoluc2.0	59463	In ENSEMBL, CommonName is Microbat
+Brandt's bat	Myotis brandtii	NA	109478	
+Bowfin whale	Balaena mysticetus	NA	27602	
+Cow	Bos taurus	ARS-UCD1.3	9913	
