@@ -1,0 +1,215 @@
+
+````{r}
+library(tidyverse)
+library(biomaRt)
+````
+
+---
+title: "Obtaining Ensembl IDs and coordinates of genes associated with a 
+pathway based on its Gene ontology (GO) ID"
+author: "Amir Rakhimov"
+date: "`r Sys.Date()`"
+---
+## Intro
+This script identifies Ensembl IDs and gene coordinates of genes associated 
+with the canonical NF-kappaB signaling pathway (GO ID: 0007249). The gene names and coordinates
+are specific to mouse (*Mus musculus*).
+
+Input: table of MGI IDs (Mouse Genome Informatics IDs) of genes associated
+with the NF-kappaB signaling pathway (data/metadata/20250313_go_0007249-select-mus_musculus.txt)
+NF-kappaB signaling pathway genes are collected from Gene Ontology:
+
+* regulates_closure: GO:0007249	
+* taxon_subset_closure_label: Mus musculus
+
+I obtained it from the web version 
+(https://amigo.geneontology.org/amigo/search/bioentity?q=*%3A*&fq=regulates_closure:%22GO%3A0007249%22&sfq=document_category:%22bioentity%22)
+and selected the following columns:
+
+1. Gene/product (bioentity). For example, MGI:MGI:2142330	
+2. Gene/product (bioentity_label). Ppm1n
+3. Gene/product name (bioentity_name). Probable protein phosphatase 1N
+4. Type (type). protein
+5. PANTHER family (panther_family). PANTHER:PTHR47992
+
+Output: tab-separated file with each gene's MGI ID, MGI symbol,
+Entrez ID, Ensembl ID, chromosome name, start position, end position,
+strand, +/-10kb coordinates.
+
+Result: 295 genes (data/metadata/20250313_20_48_11-nfkb_pathway-mouse-gene-locations.tsv)
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/home/rakhimov/projects/nfkappab_evo')
+```
+## Import the table from GO database and extract gene IDs.
+
+````{r}
+metadata.dir.path<-"./data/metadata" # directory with metadata
+# Path to the table with MGI IDs
+go_genes.table<-read.table(file.path(metadata.dir.path,"20250313_go_0007249-select-mus_musculus.txt"),
+                         header = F,sep = "\t")
+head(go_genes.table)
+````
+
+Rename the columns according to their contents: MGI ID, gene product,
+gene symbol, source (database; almost all are from MGI), type (protein,
+gene product), and PANTHER family ID.
+
+````{r}
+colnames(go_genes.table)<-c("mgi_id","gene_product","gene_symbol","source","type",
+                      "panther_id")
+# Substitute "MGI:MGI:" with "MGI:" for subsequent steps.
+go_genes.table$mgi_id<-gsub("MGI:MGI:","MGI:",go_genes.table$mgi_id)
+go_genes.table$mgi_id<-gsub("PR:","",go_genes.table$mgi_id)
+````
+
+Separate the data into IDs that come from MGI database and IDs from
+other databases.
+MGI IDs:
+
+````{r}
+mgi.genes.table<-subset(go_genes.table,source=="MGI")
+# Extract the IDs as a vector
+mgi.genes<-mgi.genes.table$mgi_id
+````
+
+Non-MGI IDs:
+
+````{r}
+non_mgi.genes.table<-subset(go_genes.table,source!="MGI")
+# Extract the IDs as a vector
+non_mgi.genes<-non_mgi.genes.table$mgi_id
+````
+
+## Prepare the Ensembl dataset to search with biomaRt
+I used the mouse dataset.
+
+````{r}
+ensembl.mmusculus<- useEnsembl(biomart="ensembl", 
+                     version = 113,
+                     dataset = "mmusculus_gene_ensembl")
+````
+
+If you don't know the name of the dataset, use the `searchDatasets()` function
+
+````{r}
+# searchDatasets(mart = ensembl, pattern = "musculus")
+````
+
+The `getBM()` function has three arguments that need to be introduced: 
+`filters`, `values`, and `attributes.`
+
+````{r}
+filters = listFilters(ensembl.mmusculus)
+head(filters)
+
+attributes = listAttributes(ensembl.mmusculus)
+attributes[1:5,]
+
+listAttributes(mart=ensembl.mmusculus)%>%head
+````
+
+## Search MGI ID isoforms.
+Find Entrez IDs, Ensembl IDs, and coordinates of genes from the `mgi.genes` vector.
+Filter based on `mgi_id`. The `mart` object is the `ensembl.mmusculus` dataset that 
+we got earlier.
+
+````{r}
+bm.table.mgi.mmusculus<-getBM(
+  attributes=c("mgi_id","mgi_symbol","entrezgene_id",
+               "ensembl_gene_id","chromosome_name",
+               "start_position","end_position","strand"),
+  filters = "mgi_id",
+  values=mgi.genes,
+  mart=ensembl.mmusculus)
+head(bm.table.mgi.mmusculus)
+
+# The mgi_id are the same, but mgi_symbol are different
+setdiff(bm.table.mgi.mmusculus$mgi_id,mgi.genes.table$mgi_id)
+setdiff(mgi.genes.table$mgi_id,bm.table.mgi.mmusculus$mgi_id)
+setdiff(bm.table.mgi.mmusculus$mgi_symbol,mgi.genes.table$gene_symbol)
+setdiff(mgi.genes.table$gene_symbol,bm.table.mgi.mmusculus$mgi_symbol)
+# Remove duplicated IDs (Trim30b) (not necessary)
+# bm.table.mgi.mmusculus<-bm.table.mgi.mmusculus%>%
+#   distinct(mgi_id,.keep_all = TRUE)
+````
+
+## Search non-MGI ID isoforms.
+Find information for genes from the `non_mgi.genes` vector.
+Here, filter based on `uniprot_isoform` because there's one isoform from the
+UniProt database. 
+The `mart` object is the `ensembl.mmusculus` dataset that we got earlier.
+
+
+````{r}
+bm.table.uniprot_iso.mmusculus<-getBM(
+  attributes=c("mgi_symbol","uniprot_isoform",
+               "entrezgene_id","ensembl_gene_id","chromosome_name",
+               "start_position","end_position","strand"),
+  filters = "uniprot_isoform",
+  values=non_mgi.genes,
+  mart=ensembl.mmusculus
+)
+head(bm.table.uniprot_iso.mmusculus)
+# Convert the chromosome name to character for joining in subsequent steps.
+bm.table.uniprot_iso.mmusculus$chromosome_name<-
+  as.character(bm.table.uniprot_iso.mmusculus$chromosome_name)
+````
+
+Find information for genes from the `non_mgi.genes` vector.
+Here, filter based on `uniprot_gn_id` because we have a gene from the UniProt 
+database.
+
+````{r}
+bm.table.uniprot_gn.mmusculus<-getBM(
+  attributes=c("uniprot_gn_id","mgi_symbol","entrezgene_id",
+               "ensembl_gene_id","chromosome_name",
+               "start_position","end_position","strand"),
+  filters = "uniprot_gn_id",
+  values=non_mgi.genes,
+  mart=ensembl.mmusculus
+)
+# Convert the chromosome name to character for joining in subsequent steps.
+bm.table.uniprot_gn.mmusculus$chromosome_name<-
+  as.character(bm.table.uniprot_gn.mmusculus$chromosome_name)
+head(bm.table.uniprot_gn.mmusculus)
+````
+
+## Join tables by `ensembl_gene_id.`
+Add +/-10kb coordinates.
+
+````{r}
+bm.table.all.mmusculus<-bind_rows(bm.table.mgi.mmusculus,
+                                  bm.table.uniprot_gn.mmusculus,
+                                  bm.table.uniprot_iso.mmusculus)%>%
+  distinct(ensembl_gene_id,.keep_all = T)%>%
+  dplyr::select(mgi_id,mgi_symbol,entrezgene_id,ensembl_gene_id,
+         chromosome_name,start_position,end_position,strand)%>%
+  mutate(start_bp_minus_10k=start_position-10000,
+         end_bp_plus_10k=end_position+10000)
+head(bm.table.all.mmusculus)
+````
+
+Save the table
+
+````{r}
+# write.table(bm.table.all.mmusculus,
+#             file=file.path(metadata.dir.path,
+#                            paste(paste(format(Sys.time(),format="%Y%m%d"),
+#                               format(Sys.time(),format = "%H_%M_%S"),sep = "_"),
+#                         "nfkb_pathway-mouse-gene-locations.tsv",sep = "-")),
+#             sep = "\t",
+#             row.names = F,
+#             col.names = T)
+
+# Final table format in the paper by Xia et al. 
+# (https://www.nature.com/articles/s41586-024-07095-8):
+# Chromosome.scaffold.name	Gene.name	Gene.start..bp.	Gene.end..bp.	Strand	Strand_new	Gene.start..bp.-10k	Gene.end..bp.+10k
+# 1	CSF1	109910242	109930992	1	+	109900242	109940992
+
+# Final table format in this script:
+# mgi_id mgi_symbol entrezgene_id    ensembl_gene_id chromosome_name start_position
+# 1 MGI:101802        F2r         14062 ENSMUSG00000048376              13       95738311
+# end_position strand start_bp_minus_10k end_bp_plus_10k
+# 1     95754995     -1                 95728311              95764995
+````
+
