@@ -33,18 +33,69 @@ library(biomaRt)
 #' Entrez ID, Ensembl ID, chromosome name, start position, end position,
 #' strand, +/-10kb coordinates.
 #' 
-#' Result: 295 genes (data/metadata/20250313_20_48_11-nfkb_pathway-mouse-gene-locations.tsv)
-
-
+#' Result: 287 coding genes (output/rtables/20250319_15_03_16-mouse-gene-locations-noncoding.tsv)
+#' and 7 non-coding genes (output/rtables/20250319_15_03_16-mouse-gene-locations-noncoding.tsv)
+#' 
+#' Workflow:
+#' 1. Prepare the Ensembl dataset
+#' 2. Find genes and transcripts with Biomart based on MGI IDs
+#' 3. Find genes and transcripts with Biomart based on other IDs like UniProt gene
+#' 4. Join these tables
+#' 5. Find detailed structure information (exon coordinates) for the joined table
+#' 6. Separate into coding and non-coding genes
+#' 7. Make a small table with gene coordinates
+#' 
+#' 
+#' 
+#' 
+#' 
 #' ```{r, setup, include=FALSE}
 #' knitr::opts_knit$set(root.dir = '/home/rakhimov/projects/nfkappab_evo')
 #' ```
 #' ## Import the table from GO database and extract gene IDs.
 metadata.dir.path<-"./data/metadata" # directory with metadata
+rtables.dir.path<-"./output/rtables"
 # Path to the table with MGI IDs
 go_genes.table<-read.table(file.path(metadata.dir.path,"20250313_go_0007249-select-mus_musculus.txt"),
                          header = F,sep = "\t")
 head(go_genes.table)
+
+# exon_chrom_start Exon region start (bp) (can be 5'UTR start)
+# Exons include UTRs.
+# cdna_coding_start: don't include UTR. Coordinates are wrt the transcript w/ UTR.
+# cds_start: don't include UTRs. Coordinates are wrt the processed transcript w/o UTR
+# genomic_coding_start: exon_chrom_start+cDNA coding start
+
+# exon_chrom_end Exon region end (bp)
+# rank Exon rank in transcript (exon order)
+# transcript_length Transcript length (including UTRs and CDS)
+
+my.attr.feature<-c("entrezgene_id",
+                         "chromosome_name",
+                         "start_position","end_position","strand",
+                         "ensembl_gene_id","ensembl_gene_id_version",
+                         "ensembl_transcript_id","ensembl_transcript_id_version",
+                         "external_gene_name","transcript_start",
+                         "transcript_end","transcription_start_site",
+                         "transcript_length","transcript_count","transcript_is_canonical")
+my.attr.structure<-c("ensembl_gene_id","ensembl_gene_id_version",
+                             "ensembl_transcript_id","ensembl_transcript_id_version",
+                             "exon_chrom_start","exon_chrom_end",
+                             "rank","cdna_coding_start",
+                             "cdna_coding_end",
+                             "cds_start","cds_end",
+                             "genomic_coding_start","genomic_coding_end",
+                             "5_utr_start","5_utr_end",
+                             "3_utr_start","3_utr_end","cds_length")
+my.attr.feature.mgi<-c("mgi_id","mgi_symbol",my.attr.feature)
+my.attr.feature.uniprot_gn<-c("uniprot_gn_id","mgi_symbol",my.attr.feature)
+my.attr.feature.uniprot_iso<-c("mgi_symbol","uniprot_isoform",
+                                    my.attr.feature)
+# my.attr.mgi.structure<-c("mgi_id","mgi_symbol",my.attr.structure)
+# my.attr.uniprot_gn.structure<-c("uniprot_gn_id","mgi_symbol",my.attr.structure)
+# my.attr.uniprot_iso.structure<-c("mgi_symbol","uniprot_isoform",
+#                               my.attr.structure)
+
 #' Rename the columns according to their contents: MGI ID, gene product,
 #' gene symbol, source (database; almost all are from MGI), type (protein,
 #' gene product), and PANTHER family ID.
@@ -67,97 +118,159 @@ non_mgi.genes<-non_mgi.genes.table$mgi_id
 
 #' ## Prepare the Ensembl dataset to search with biomaRt
 #' I used the mouse dataset.
-ensembl.mmusculus<- useEnsembl(biomart="ensembl", 
-                     version = 113,
+ensembl.ds<- useEnsembl(biomart="ensembl", 
+                     version = 112,
                      dataset = "mmusculus_gene_ensembl")
 #' If you don't know the name of the dataset, use the `searchDatasets()` function
 # searchDatasets(mart = ensembl, pattern = "musculus")
 
 #' The `getBM()` function has three arguments that need to be introduced: 
 #' `filters`, `values`, and `attributes.`
-filters = listFilters(ensembl.mmusculus)
-head(filters)
+# filters = listFilters(ensembl.ds)
+# head(filters)
 
-attributes = listAttributes(ensembl.mmusculus)
-attributes[1:5,]
+# attributes = listAttributes(ensembl.ds)
+# attributes[1:5,]
 
-listAttributes(mart=ensembl.mmusculus)%>%head
+listAttributes(mart=ensembl.ds)%>%head
 #' ## Search MGI ID isoforms.
 #' Find Entrez IDs, Ensembl IDs, and coordinates of genes from the `mgi.genes` vector.
-#' Filter based on `mgi_id`. The `mart` object is the `ensembl.mmusculus` dataset that 
+#' Filter based on `mgi_id`. The `mart` object is the `ensembl.ds` dataset that 
 #' we got earlier.
-bm.table.mgi.mmusculus<-getBM(
-  attributes=c("mgi_id","mgi_symbol","entrezgene_id",
-               "ensembl_gene_id","chromosome_name",
-               "start_position","end_position","strand"),
+bm.feature.mgi<-getBM(
+  attributes=my.attr.feature.mgi,
   filters = "mgi_id",
   values=mgi.genes,
-  mart=ensembl.mmusculus)
-head(bm.table.mgi.mmusculus)
-
-# The mgi_id are the same, but mgi_symbol are different
-setdiff(bm.table.mgi.mmusculus$mgi_id,mgi.genes.table$mgi_id)
-setdiff(mgi.genes.table$mgi_id,bm.table.mgi.mmusculus$mgi_id)
-setdiff(bm.table.mgi.mmusculus$mgi_symbol,mgi.genes.table$gene_symbol)
-setdiff(mgi.genes.table$gene_symbol,bm.table.mgi.mmusculus$mgi_symbol)
-# Remove duplicated IDs (Trim30b) (not necessary)
-# bm.table.mgi.mmusculus<-bm.table.mgi.mmusculus%>%
-#   distinct(mgi_id,.keep_all = TRUE)
+  mart=ensembl.ds)
+head(bm.feature.mgi)
 
 #' ## Search non-MGI ID isoforms.
 #' Find information for genes from the `non_mgi.genes` vector.
 #' Here, filter based on `uniprot_isoform` because there's one isoform from the
 #' UniProt database. 
-#' The `mart` object is the `ensembl.mmusculus` dataset that we got earlier.
+#' The `mart` object is the `ensembl.ds` dataset that we got earlier.
 #' 
-bm.table.uniprot_iso.mmusculus<-getBM(
-  attributes=c("mgi_symbol","uniprot_isoform",
-               "entrezgene_id","ensembl_gene_id","chromosome_name",
-               "start_position","end_position","strand"),
+bm.feature.uniprot_iso<-getBM(
+  attributes=my.attr.feature.uniprot_iso,
   filters = "uniprot_isoform",
   values=non_mgi.genes,
-  mart=ensembl.mmusculus
+  mart=ensembl.ds
 )
-head(bm.table.uniprot_iso.mmusculus)
+head(bm.feature.uniprot_iso)
+
 # Convert the chromosome name to character for joining in subsequent steps.
-bm.table.uniprot_iso.mmusculus$chromosome_name<-
-  as.character(bm.table.uniprot_iso.mmusculus$chromosome_name)
+bm.feature.uniprot_iso$chromosome_name<-
+  as.character(bm.feature.uniprot_iso$chromosome_name)
 #' Find information for genes from the `non_mgi.genes` vector.
 #' Here, filter based on `uniprot_gn_id` because we have a gene from the UniProt 
 #' database.
-bm.table.uniprot_gn.mmusculus<-getBM(
-  attributes=c("uniprot_gn_id","mgi_symbol","entrezgene_id",
-               "ensembl_gene_id","chromosome_name",
-               "start_position","end_position","strand"),
+bm.feature.uniprot_gn<-getBM(
+  attributes=my.attr.feature.uniprot_gn,
   filters = "uniprot_gn_id",
   values=non_mgi.genes,
-  mart=ensembl.mmusculus
+  mart=ensembl.ds
 )
 # Convert the chromosome name to character for joining in subsequent steps.
-bm.table.uniprot_gn.mmusculus$chromosome_name<-
-  as.character(bm.table.uniprot_gn.mmusculus$chromosome_name)
-head(bm.table.uniprot_gn.mmusculus)
+bm.feature.uniprot_gn$chromosome_name<-
+  as.character(bm.feature.uniprot_gn$chromosome_name)
+head(bm.feature.uniprot_gn)
 
-#' ## Join tables by `ensembl_gene_id.`
+#' ## Join feature tables by `ensembl_gene_id.`
+bm.feature.all<-bind_rows(bm.feature.mgi,
+                            bm.feature.uniprot_gn,
+                            bm.feature.uniprot_iso)%>%
+  dplyr::distinct(ensembl_transcript_id_version,.keep_all = T)%>%
+  dplyr::select(all_of(my.attr.feature.mgi))
+head(bm.feature.all)
+
+#' Get unique stable ensembl gene_ids that correspond to the combined dataset
+bm.ensembl_gene_id.all<-bm.feature.all%>%
+  distinct(ensembl_gene_id)%>%
+  arrange%>%
+  pull
+
+#' Find attributes from the structure page by ensembl gene_id because
+#' MGI ID doesn't exist in the structure page
+bm.structure.all<-getBM(
+  attributes=my.attr.structure,
+  filters = "ensembl_gene_id",
+  values=bm.ensembl_gene_id.all,
+  mart=ensembl.ds)
+head(bm.structure.all)
+
+
+#' Bind two tables: keep only canonical ensembl transcripts
+bm.all<-bm.feature.all%>%
+  full_join(bm.structure.all,
+            by = join_by(ensembl_gene_id, 
+                         ensembl_gene_id_version, 
+                         ensembl_transcript_id, 
+                         ensembl_transcript_id_version),
+            relationship = "many-to-many")%>%
+  drop_na(transcript_is_canonical)%>%
+  rename("gene_name"="external_gene_name")
+
+# The mgi_id are the same, but mgi_symbol are different
+setdiff(bm.all$mgi_id,mgi.genes.table$mgi_id)
+setdiff(mgi.genes.table$mgi_id,bm.all$mgi_id)
+setdiff(bm.all$mgi_symbol,mgi.genes.table$gene_symbol)
+setdiff(mgi.genes.table$gene_symbol,bm.all$mgi_symbol)
+#' Remove duplicated IDs (Trim30b) 
+bm.all<-bm.all%>%
+  group_by(ensembl_transcript_id_version,mgi_id,exon_chrom_start)%>%
+  distinct(ensembl_transcript_id_version,mgi_id,exon_chrom_start,.keep_all = TRUE)%>%
+  ungroup()
+#' Verify that we didn't lose any MGI IDs or Ensembl genes
+stopifnot(length(unique(bm.all$mgi_id))==length(unique(mgi.genes.table$mgi_id)))
+stopifnot(length(unique(bm.all$ensembl_gene_id_version))==
+            length(unique(bm.feature.mgi$ensembl_gene_id_version)))
+
+
+# Separate coding and non-coding sequences (pseudogenes) into two tables
+bm.all.coding<-bm.all%>%
+  group_by(ensembl_gene_id_version)%>%
+  filter(cds_length==max(cds_length))%>%
+  ungroup()
+
+bm.all.noncoding<-bm.all%>%
+  group_by(ensembl_gene_id_version)%>%
+  filter(is.na(cds_length))%>%
+  ungroup()
+
+#' Make a small version with coordinates and the most important information.
 #' Add +/-10kb coordinates.
-bm.table.all.mmusculus<-bind_rows(bm.table.mgi.mmusculus,
-                                  bm.table.uniprot_gn.mmusculus,
-                                  bm.table.uniprot_iso.mmusculus)%>%
-  distinct(ensembl_gene_id,.keep_all = T)%>%
-  dplyr::select(mgi_id,mgi_symbol,entrezgene_id,ensembl_gene_id,
-         chromosome_name,start_position,end_position,strand)%>%
-  mutate(start_bp_minus_10k=start_position-10000,
-         end_bp_plus_10k=end_position+10000)
-head(bm.table.all.mmusculus)
-#' Save the table
-# write.table(bm.table.all.mmusculus,
-#             file=file.path(metadata.dir.path,
-#                            paste(paste(format(Sys.time(),format="%Y%m%d"),
-#                               format(Sys.time(),format = "%H_%M_%S"),sep = "_"),
-#                         "nfkb_pathway-mouse-gene-locations.tsv",sep = "-")),
-#             sep = "\t",
-#             row.names = F,
-#             col.names = T)
+get_gene_table_locations<-function(gene_table){
+  gene_table_locations<-gene_table%>%
+    dplyr::select(chromosome_name,gene_name,start_position,
+                  end_position,strand)%>%
+    distinct(gene_name,.keep_all = TRUE)%>%
+    rename("gene_start_bp"="start_position",
+           "gene_end_bp"="end_position")%>%
+    mutate(strand_new=ifelse(strand=="1","+","-"),
+           gene_start_bp_minus_10k=gene_start_bp-10000,
+           gene_end_bp_plus_10k=gene_end_bp+10000)
+  return(gene_table_locations)
+}
+gene.locations.coding<-get_gene_table_locations(bm.all.coding)
+gene.locations.noncoding<-get_gene_table_locations(bm.all.noncoding)
+
+#' Save the tables
+for (rtable in c("bm.all.coding","bm.all.noncoding",
+                 "gene.locations.coding","gene.locations.noncoding")){
+  rtable.fname<-gsub("\\.","-",rtable)
+  rtable.path<-file.path(rtables.dir.path,
+                         paste(paste(format(Sys.time(),format="%Y%m%d"),
+                                     format(Sys.time(),format = "%H_%M_%S"),sep = "_"),
+                               "mouse",paste0(rtable.fname,".tsv"),sep = "-"))
+  print(paste(rtable, "was saved as",rtable.path))
+  write.table(get(rtable),
+              file=rtable.path,
+              sep = "\t",
+              quote = F,
+              row.names = F,
+              col.names = T)
+
+}
 
 # Final table format in the paper by Xia et al. 
 # (https://www.nature.com/articles/s41586-024-07095-8):
@@ -165,8 +278,5 @@ head(bm.table.all.mmusculus)
 # 1	CSF1	109910242	109930992	1	+	109900242	109940992
 
 # Final table format in this script:
-# mgi_id mgi_symbol entrezgene_id    ensembl_gene_id chromosome_name start_position
-# 1 MGI:101802        F2r         14062 ENSMUSG00000048376              13       95738311
-# end_position strand start_bp_minus_10k end_bp_plus_10k
-# 1     95754995     -1                 95728311              95764995
-
+# chromosome_name gene_name       gene_start_bp   gene_end_bp     strand  strand_new      gene_start_bp_minus_10k gene_end_bp_plus_10k
+# 13      F2r     95738311        95754995        -1      -       95728311        95764995
